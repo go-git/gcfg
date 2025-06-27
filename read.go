@@ -107,11 +107,6 @@ func read(callback func(string, string, string, string, bool) error,
 				}
 
 				sectsub = ss
-				if sectsub == "" {
-					if err, fatal := joinNonFatal(accErr, errfn("empty subsection name")); fatal {
-						return err
-					}
-				}
 				pos, tok, lit, err = s.Scan()
 				if err != nil {
 					return err
@@ -123,11 +118,6 @@ func read(callback func(string, string, string, string, bool) error,
 				}
 			}
 			if tok != token.RBRACK {
-				if sectsub == "" {
-					if err, fatal := joinNonFatal(accErr, errfn("expected subsection name or right bracket")); fatal {
-						return err
-					}
-				}
 				if err, fatal := joinNonFatal(accErr, errfn("expected right bracket")); fatal {
 					return err
 				}
