@@ -10,7 +10,7 @@ import (
 	"github.com/go-git/gcfg/v2/token"
 )
 
-var unescape = map[rune]rune{'\\': '\\', '"': '"', 'n': '\n', 't': '\t', 'b': '\b', '\n': '\n'}
+var unescape = map[rune]rune{'\\': '\\', '"': '"', 'n': '\n', 't': '\t', 'b': '\b'}
 
 // no error: invalid literals should be caught by scanner
 func unquote(s string) (string, error) {
@@ -22,7 +22,9 @@ func unquote(s string) (string, error) {
 			case ok:
 				u = append(u, uc)
 				fallthrough
-			case !q && c == '\n':
+			case c == '\n':
+				// A backslash at the end of a line continues the value
+				// on the next one, and both are dropped, as git does.
 				esc = false
 				continue
 			}
