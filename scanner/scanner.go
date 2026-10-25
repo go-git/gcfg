@@ -255,7 +255,7 @@ loop:
 		s.next()
 		switch {
 		case inQuote && ch == '\\':
-			if s.ch == '\r' {
+			if s.ch == '\r' && s.rdOffset < len(s.src) && s.src[s.rdOffset] == '\n' {
 				hasCR = true
 				s.next()
 			}

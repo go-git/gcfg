@@ -134,12 +134,21 @@ var readtests = []struct {
 	{"\n[section]\nname=\\", &cBasic{}, false},
 	{"\n[section]\nname=\\a", &cBasic{}, false},
 	{"\n[section]\nname=\"val\\a\"", &cBasic{}, false},
+	// a CR after a backslash only folds as part of CRLF
+	{"\n[section]\nname=\"a\\\rb\"", &cBasic{}, false},
 	{"\n[section]\nname=val\\", &cBasic{}, false},
 	// {"\n[sub \"A\\\n\"]\nname=value", &cSubs{}, false},
 	{"\n[sub \"A\\\t\"]\nname=value", &cSubs{}, false},
 	// broken line
 	// {"[section]\nname=value \\\n value", &cBasic{Section: cBasicS1{Name: "value  value"}}, true},
 	// {"[section]\nname=\"value \\\n value\"", &cBasic{}, false},
+}}, {"scanning:bom", []readtest{
+	{"\uFEFF[section]\nname=value", &cBasic{Section: cBasicS1{Name: "value"}}, true},
+	// only a complete BOM, and only at the very start, is skipped
+	{"\xEF[section]\nname=value", &cBasic{}, false},
+	{"\xEF\xBB[section]\nname=value", &cBasic{}, false},
+	{"\uFEFF\uFEFF[section]\nname=value", &cBasic{}, false},
+	{"[section]\n\uFEFFname=value", &cBasic{}, false},
 }}, {"scanning:whitespace", []readtest{
 	{" \n[section]\nname=value", &cBasic{Section: cBasicS1{Name: "value"}}, true},
 	{" [section]\nname=value", &cBasic{Section: cBasicS1{Name: "value"}}, true},
