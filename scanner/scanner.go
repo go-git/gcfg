@@ -97,6 +97,8 @@ const (
 	ScanComments Mode = 1 << iota // return comments as COMMENT tokens
 )
 
+const bom = 0xFEFF // byte order mark, only permitted as the very first character
+
 // Init prepares the scanner s to tokenize the text src by setting the
 // scanner at the beginning of src. The scanner uses the file set file
 // for position information and it adds line information for each line.
@@ -132,6 +134,9 @@ func (s *Scanner) Init(file *token.File, src []byte, err ErrorHandler, mode Mode
 	s.nextVal = false
 
 	s.next()
+	if s.ch == bom {
+		s.next() // git ignores a UTF-8 BOM at the start of a config file
+	}
 	return nil
 }
 
@@ -250,6 +255,10 @@ loop:
 		s.next()
 		switch {
 		case inQuote && ch == '\\':
+			if s.ch == '\r' && s.rdOffset < len(s.src) && s.src[s.rdOffset] == '\n' {
+				hasCR = true
+				s.next()
+			}
 			s.scanEscape(true)
 		case !inQuote && ch == '\\':
 			if s.ch == '\r' {
