@@ -482,3 +482,64 @@ func BenchmarkScan(b *testing.B) {
 		}
 	}
 }
+
+// A legacy [section.subsection] header scans as one IDENT holding both
+// names and the dot between them, only where the text up to the closing
+// bracket is made of ASCII letters, digits, '-' and '.', with a non-empty
+// name on each side of the first dot.
+func TestScanLegacyHeader(t *testing.T) {
+	type tl struct {
+		tok token.Token
+		lit string
+	}
+	for _, tt := range []struct {
+		src  string
+		want []tl
+		errs int
+	}{
+		{"[a.b]", []tl{{token.LBRACK, ""}, {token.IDENT, "a.b"}, {token.RBRACK, ""}}, 0},
+		{"[A.b.C]", []tl{{token.LBRACK, ""}, {token.IDENT, "A.b.C"}, {token.RBRACK, ""}}, 0},
+		{"[1a.-b]", []tl{{token.LBRACK, ""}, {token.IDENT, "1a.-b"}, {token.RBRACK, ""}}, 0},
+		{"[a.b]\n[c]", []tl{{token.LBRACK, ""}, {token.IDENT, "a.b"}, {token.RBRACK, ""},
+			{token.EOL, ""}, {token.LBRACK, ""}, {token.IDENT, "c"}, {token.RBRACK, ""}}, 0},
+		// not legacy: the usual scanning, with its errors
+		{"[.b]", []tl{{token.LBRACK, ""}, {token.ILLEGAL, "."}, {token.IDENT, "b"}, {token.RBRACK, ""}}, 1},
+		{"[a.]", []tl{{token.LBRACK, ""}, {token.IDENT, "a"}, {token.ILLEGAL, "."}, {token.RBRACK, ""}}, 1},
+		{"[.]", []tl{{token.LBRACK, ""}, {token.ILLEGAL, "."}, {token.RBRACK, ""}}, 1},
+		{"[a.b ]", []tl{{token.LBRACK, ""}, {token.IDENT, "a"}, {token.ILLEGAL, "."}, {token.IDENT, "b"}, {token.RBRACK, ""}}, 1},
+		{"[a.b", []tl{{token.LBRACK, ""}, {token.IDENT, "a"}, {token.ILLEGAL, "."}, {token.IDENT, "b"}}, 1},
+		{"[a]", []tl{{token.LBRACK, ""}, {token.IDENT, "a"}, {token.RBRACK, ""}}, 0},
+		// a '[' that is not followed by one is not a header start
+		{"= [a.b]", []tl{{token.ASSIGN, ""}, {token.STRING, "[a.b]"}}, 0},
+	} {
+		var s Scanner
+		f, err := fset.AddFile("src", fset.Base(), len(tt.src))
+		if err != nil {
+			t.Fatal(err)
+		}
+		s.Init(f, []byte(tt.src), func(token.Position, string) {}, 0)
+		var got []tl
+		for {
+			_, tok, lit, err := s.Scan()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tok == token.EOF {
+				break
+			}
+			got = append(got, tl{tok, lit})
+		}
+		if len(got) != len(tt.want) {
+			t.Errorf("%q: want %v, got %v", tt.src, tt.want, got)
+			continue
+		}
+		for i := range got {
+			if got[i] != tt.want[i] {
+				t.Errorf("%q: token %d: want %v, got %v", tt.src, i, tt.want[i], got[i])
+			}
+		}
+		if s.ErrorCount != tt.errs {
+			t.Errorf("%q: want %d errors, got %d", tt.src, tt.errs, s.ErrorCount)
+		}
+	}
+}

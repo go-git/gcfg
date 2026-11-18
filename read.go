@@ -92,7 +92,16 @@ func read(callback func(string, string, string, string, bool) error,
 					return err
 				}
 			}
+			// The scanner only returns a dot in the name of a legacy
+			// [section.subsection] header. Git reads it as the section up
+			// to the first dot and the subsection after it, both
+			// lowercased.
 			sect, sectsub = lit, ""
+			if tok == token.IDENT {
+				if name, sub, ok := strings.Cut(lit, "."); ok {
+					sect, sectsub = strings.ToLower(name), strings.ToLower(sub)
+				}
+			}
 			pos, tok, lit, err = s.Scan()
 			if err != nil {
 				return err
