@@ -30,9 +30,8 @@
 //   - an empty subsection name, as in `[sec ""]`, is stored like `[sec]`, with
 //     an empty subsection name, by the `Read*Into` functions and
 //     `ReadWithCallback`. Git keeps them apart (`sec..key` against
-//     `sec.key`), and
-//     `ReadWithSubsectionCallback` reports the difference through its
-//     `hasSubsection` argument
+//     `sec.key`), and `ReadWithOptions` reports the difference through
+//     `Event.HasSubsection`
 //   - (planned) within a single file, definitions must be contiguous for each:
 //   - section: '[secA]' -> '[secB]' -> '[secA]' is an error
 //   - subsection: '[sec "A"]' -> '[sec "B"]' -> '[sec "A"]' is an error

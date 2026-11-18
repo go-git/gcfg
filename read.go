@@ -48,13 +48,14 @@ func unquote(s string) (string, error) {
 	return string(u), nil
 }
 
-func read(callback func(string, string, bool, string, string, bool) error,
+func read(callback func(Event) error,
 	fset *token.FileSet, file *token.File, src []byte) error {
 	//
 	var s scanner.Scanner
 	var errs scanner.ErrorList
 	s.Init(file, src, func(p token.Position, m string) { errs.Add(p, m) }, 0)
 	sect, sectsub, hasSub := "", "", false
+	var hdrPos token.Position
 	pos, tok, lit, err := s.Scan()
 	errfn := func(msg string) error {
 		return fmt.Errorf("%s: %s", fset.Position(pos), msg)
@@ -78,6 +79,7 @@ func read(callback func(string, string, bool, string, string, bool) error,
 				return err
 			}
 		case token.LBRACK:
+			hdrPos = fset.Position(pos)
 			pos, tok, lit, err = s.Scan()
 			if err != nil {
 				return err
@@ -145,11 +147,13 @@ func read(callback func(string, string, bool, string, string, bool) error,
 			// If a section/subsection header was found, ensure a
 			// container object is created, even if there are no
 			// variables further down.
-			err := callback(sect, sectsub, hasSub, "", "", true)
+			err := callback(Event{Section: sect, Subsection: sectsub, HasSubsection: hasSub,
+				BlankValue: true, Position: hdrPos})
 			if err != nil {
 				return err
 			}
 		case token.IDENT:
+			keyPos := fset.Position(pos)
 			if sect == "" {
 				if err, fatal := joinNonFatal(accErr, errfn("expected section header")); fatal {
 					return err
@@ -205,7 +209,8 @@ func read(callback func(string, string, bool, string, string, bool) error,
 					}
 				}
 			}
-			err := callback(sect, sectsub, hasSub, n, v, blank)
+			err := callback(Event{Section: sect, Subsection: sectsub, HasSubsection: hasSub,
+				Key: n, Value: v, BlankValue: blank, Position: keyPos})
 			if err != nil {
 				return err
 			}
@@ -225,15 +230,15 @@ func read(callback func(string, string, bool, string, string, bool) error,
 func readInto(config interface{}, fset *token.FileSet, file *token.File,
 	src []byte) error {
 	//
-	firstPassCallback := func(s string, ss string, _ bool, k string, v string, bv bool) error {
-		return set(config, s, ss, k, v, bv, false)
+	firstPassCallback := func(e Event) error {
+		return set(config, e.Section, e.Subsection, e.Key, e.Value, e.BlankValue, false)
 	}
 	err := read(firstPassCallback, fset, file, src)
 	if err != nil {
 		return err
 	}
-	secondPassCallback := func(s string, ss string, _ bool, k string, v string, bv bool) error {
-		return set(config, s, ss, k, v, bv, true)
+	secondPassCallback := func(e Event) error {
+		return set(config, e.Section, e.Subsection, e.Key, e.Value, e.BlankValue, true)
 	}
 	return read(secondPassCallback, fset, file, src)
 }
@@ -252,33 +257,78 @@ func readInto(config interface{}, fset *token.FileSet, file *token.File,
 //
 // A header [x ""] is reported like [x], with the same empty subsection. A
 // legacy [A.B] header is reported as section "a" and subsection "b".
-// ReadWithSubsectionCallback tells [x] and [x ""] apart.
+// ReadWithOptions tells [x] and [x ""] apart.
 //
 // If blank value flag is true, it means that the value was not set for an option
 // (as opposed to set to empty string).
 //
 // If callback returns an error, ReadWithCallback terminates with an error too.
 func ReadWithCallback(reader io.Reader, callback func(string, string, string, string, bool) error) error {
-	return ReadWithSubsectionCallback(reader, func(s, ss string, _ bool, k, v string, bv bool) error {
-		return callback(s, ss, k, v, bv)
-	})
+	return ReadWithOptions(reader, WithCallback(func(e Event) error {
+		return callback(e.Section, e.Subsection, e.Key, e.Value, e.BlankValue)
+	}))
 }
 
-// ReadWithSubsectionCallback is like ReadWithCallback, but the callback also
-// receives hasSubsection, which tells [x] from [x ""]. Both give an empty
-// subsection, but Git reads them as x.key and x..key respectively.
+// Event is one item the reader found: a section header, or an option line
+// under one. ReadWithOptions passes it to the callback set by WithCallback.
 //
-// hasSubsection is true for a header with a quoted subsection, including an
-// empty one, and for a legacy [section.subsection] header such as [a.b].
-// It is false for a plain [x]. It describes the header being read, so it is
-// also passed with the option lines that follow that header.
+// A header is reported once, with an empty Key and Value and BlankValue true,
+// so that a section without options is still seen. Each option line that
+// follows is reported with the section and subsection of its header.
+type Event struct {
+	// Section is the section name, lowercased for a legacy [A.B] header,
+	// whose subsection is lowercased too.
+	Section string
+	// Subsection is the subsection name, empty for [x] and for [x ""].
+	Subsection string
+	// HasSubsection tells [x] from [x ""], which both give an empty
+	// Subsection but which Git reads as x.key and x..key. It is true for a
+	// header with a quoted subsection, including an empty one, and for a
+	// legacy [section.subsection] header such as [a.b], and false for a
+	// plain [x]. It describes the header being read, so it is also set on
+	// the option lines that follow that header.
+	HasSubsection bool
+	// Key and Value are the option name and its value, both empty for a
+	// header.
+	Key, Value string
+	// BlankValue is true when the option has no value (as opposed to an
+	// empty string), and for a header.
+	BlankValue bool
+	// Position is where the item starts: the "[" of a header, or the key of
+	// an option line. Its Line and Column start at 1, and Filename is empty.
+	// A consumer can use it to point at the item in an error message.
+	Position token.Position
+}
+
+// ReadOption configures ReadWithOptions.
+type ReadOption func(*readOptions)
+
+type readOptions struct {
+	callback func(Event) error
+}
+
+// WithCallback sets the function ReadWithOptions calls with each Event. If it
+// returns an error, reading stops and ReadWithOptions returns that error. A
+// later WithCallback replaces an earlier one.
+func WithCallback(callback func(Event) error) ReadOption {
+	return func(o *readOptions) { o.callback = callback }
+}
+
+// ReadWithOptions reads gcfg formatted data from reader and reports each
+// section header and option to the callback set by WithCallback. Without it
+// the data is only parsed: no events are reported and the errors are the same
+// as with a callback that ignores every event.
 //
-// As with ReadWithCallback, the callback is also called once per header, with
-// an empty key and value and blankValue true.
-//
-// The Read*Into functions drop the flag, so an empty subsection there still
-// folds onto the section.
-func ReadWithSubsectionCallback(reader io.Reader, callback func(section, subsection string, hasSubsection bool, key, value string, blankValue bool) error) error {
+// It is ReadWithCallback with an Event in place of positional arguments, so
+// that it can also report whether a header had a subsection. The Read*Into
+// functions do not use that flag, so an empty subsection there still folds
+// onto the section.
+func ReadWithOptions(reader io.Reader, opts ...ReadOption) error {
+	o := readOptions{callback: func(Event) error { return nil }}
+	for _, opt := range opts {
+		opt(&o)
+	}
+
 	src, err := io.ReadAll(reader)
 	if err != nil {
 		return err
@@ -290,7 +340,7 @@ func ReadWithSubsectionCallback(reader io.Reader, callback func(section, subsect
 		return err
 	}
 
-	return read(callback, fset, file, src)
+	return read(o.callback, fset, file, src)
 }
 
 // ReadInto reads gcfg formatted data from reader and sets the values into the
@@ -299,7 +349,7 @@ func ReadWithSubsectionCallback(reader io.Reader, callback func(section, subsect
 // Git files the keys under [sec ""] as sec..key, which a struct target cannot
 // represent, so ReadInto reads them as sec.key, like those under [sec]. A
 // caller that applies a policy keyed on a subsection must use
-// ReadWithSubsectionCallback instead.
+// ReadWithOptions instead.
 func ReadInto(config interface{}, reader io.Reader) error {
 	src, err := io.ReadAll(reader)
 	if err != nil {
