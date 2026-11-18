@@ -810,3 +810,107 @@ func TestReadLegacySubsectionHeaderRefusedGitAccepts(t *testing.T) {
 		}
 	}
 }
+
+type subsectionEvent struct {
+	sect, sub string
+	hasSub    bool
+	key, val  string
+	blank     bool
+}
+
+func TestReadWithSubsectionCallback(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+		want []subsectionEvent
+	}{
+		{"plain", "[a]\nk = 1\n", []subsectionEvent{
+			{"a", "", false, "", "", true},
+			{"a", "", false, "k", "1", false},
+		}},
+		{"quoted", "[a \"b\"]\nk\n", []subsectionEvent{
+			{"a", "b", true, "", "", true},
+			{"a", "b", true, "k", "", true},
+		}},
+		{"quoted empty", "[a \"\"]\nk = 1\n", []subsectionEvent{
+			{"a", "", true, "", "", true},
+			{"a", "", true, "k", "1", false},
+		}},
+		{"legacy", "[a.b]\nk = 1\n", []subsectionEvent{
+			{"a", "b", true, "", "", true},
+			{"a", "b", true, "k", "1", false},
+		}},
+		{"legacy trailing dot", "[a.b.]\nk = 1\n", []subsectionEvent{
+			{"a", "b.", true, "", "", true},
+			{"a", "b.", true, "k", "1", false},
+		}},
+		{"legacy double dot", "[a..b]\nk = 1\n", []subsectionEvent{
+			{"a", ".b", true, "", "", true},
+			{"a", ".b", true, "k", "1", false},
+		}},
+		{"combined", "[a.b]\nk=1\n[a \"b\"]\nk=2\n[a \"\"]\nk=3\n[a.b.]\nk=4\n[a]\nk=5\n", []subsectionEvent{
+			{"a", "b", true, "", "", true},
+			{"a", "b", true, "k", "1", false},
+			{"a", "b", true, "", "", true},
+			{"a", "b", true, "k", "2", false},
+			{"a", "", true, "", "", true},
+			{"a", "", true, "k", "3", false},
+			{"a", "b.", true, "", "", true},
+			{"a", "b.", true, "k", "4", false},
+			{"a", "", false, "", "", true},
+			{"a", "", false, "k", "5", false},
+		}},
+		{"reset on later plain header", "[x \"y\"]\nk=1\n[z]\nk=2\n[x]\nk=3\n", []subsectionEvent{
+			{"x", "y", true, "", "", true},
+			{"x", "y", true, "k", "1", false},
+			{"z", "", false, "", "", true},
+			{"z", "", false, "k", "2", false},
+			{"x", "", false, "", "", true},
+			{"x", "", false, "k", "3", false},
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got []subsectionEvent
+			err := ReadWithSubsectionCallback(strings.NewReader(tt.src),
+				func(s, ss string, has bool, k, v string, b bool) error {
+					got = append(got, subsectionEvent{s, ss, has, k, v, b})
+					return nil
+				})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("got  %+v\nwant %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestReadWithCallbackIgnoresSubsectionFlag(t *testing.T) {
+	var got [][2]string
+	err := ReadWithCallback(strings.NewReader("[x \"\"]\na = 1\n[x]\n"),
+		func(s, ss, k, v string, b bool) error {
+			got = append(got, [2]string{s, ss})
+			return nil
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %v", got)
+	}
+	for _, g := range got {
+		if g != [2]string{"x", ""} {
+			t.Errorf("got %v", g)
+		}
+	}
+}
+
+func TestReadWithSubsectionCallbackRefusesEmptyLegacyName(t *testing.T) {
+	err := ReadWithSubsectionCallback(strings.NewReader("[x.]\nk = 1\n"),
+		func(s, ss string, has bool, k, v string, b bool) error { return nil })
+	if err == nil {
+		t.Error("expected an error for [x.]")
+	}
+}

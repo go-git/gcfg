@@ -48,13 +48,13 @@ func unquote(s string) (string, error) {
 	return string(u), nil
 }
 
-func read(callback func(string, string, string, string, bool) error,
+func read(callback func(string, string, bool, string, string, bool) error,
 	fset *token.FileSet, file *token.File, src []byte) error {
 	//
 	var s scanner.Scanner
 	var errs scanner.ErrorList
 	s.Init(file, src, func(p token.Position, m string) { errs.Add(p, m) }, 0)
-	sect, sectsub := "", ""
+	sect, sectsub, hasSub := "", "", false
 	pos, tok, lit, err := s.Scan()
 	errfn := func(msg string) error {
 		return fmt.Errorf("%s: %s", fset.Position(pos), msg)
@@ -96,10 +96,10 @@ func read(callback func(string, string, string, string, bool) error,
 			// [section.subsection] header. Git reads it as the section up
 			// to the first dot and the subsection after it, both
 			// lowercased.
-			sect, sectsub = lit, ""
+			sect, sectsub, hasSub = lit, "", false
 			if tok == token.IDENT {
 				if name, sub, ok := strings.Cut(lit, "."); ok {
-					sect, sectsub = strings.ToLower(name), strings.ToLower(sub)
+					sect, sectsub, hasSub = strings.ToLower(name), strings.ToLower(sub), true
 				}
 			}
 			pos, tok, lit, err = s.Scan()
@@ -117,7 +117,7 @@ func read(callback func(string, string, string, string, bool) error,
 					return err
 				}
 
-				sectsub = ss
+				sectsub, hasSub = ss, true
 				pos, tok, lit, err = s.Scan()
 				if err != nil {
 					return err
@@ -145,7 +145,7 @@ func read(callback func(string, string, string, string, bool) error,
 			// If a section/subsection header was found, ensure a
 			// container object is created, even if there are no
 			// variables further down.
-			err := callback(sect, sectsub, "", "", true)
+			err := callback(sect, sectsub, hasSub, "", "", true)
 			if err != nil {
 				return err
 			}
@@ -205,7 +205,7 @@ func read(callback func(string, string, string, string, bool) error,
 					}
 				}
 			}
-			err := callback(sect, sectsub, n, v, blank)
+			err := callback(sect, sectsub, hasSub, n, v, blank)
 			if err != nil {
 				return err
 			}
@@ -225,14 +225,14 @@ func read(callback func(string, string, string, string, bool) error,
 func readInto(config interface{}, fset *token.FileSet, file *token.File,
 	src []byte) error {
 	//
-	firstPassCallback := func(s string, ss string, k string, v string, bv bool) error {
+	firstPassCallback := func(s string, ss string, _ bool, k string, v string, bv bool) error {
 		return set(config, s, ss, k, v, bv, false)
 	}
 	err := read(firstPassCallback, fset, file, src)
 	if err != nil {
 		return err
 	}
-	secondPassCallback := func(s string, ss string, k string, v string, bv bool) error {
+	secondPassCallback := func(s string, ss string, _ bool, k string, v string, bv bool) error {
 		return set(config, s, ss, k, v, bv, true)
 	}
 	return read(secondPassCallback, fset, file, src)
@@ -244,17 +244,41 @@ func readInto(config interface{}, fset *token.FileSet, file *token.File,
 // Callback is called with section, subsection, option key, option value
 // and blank value flag as arguments.
 //
-// When a section is found, callback is called with nil subsection, option key
-// and option value.
+// When a section is found, callback is called with an empty subsection,
+// option key and option value.
 //
-// When a subsection is found, callback is called with nil option key and
+// When a subsection is found, callback is called with an empty option key and
 // option value.
+//
+// A header [x ""] is reported like [x], with the same empty subsection. A
+// legacy [A.B] header is reported as section "a" and subsection "b".
+// ReadWithSubsectionCallback tells [x] and [x ""] apart.
 //
 // If blank value flag is true, it means that the value was not set for an option
 // (as opposed to set to empty string).
 //
 // If callback returns an error, ReadWithCallback terminates with an error too.
 func ReadWithCallback(reader io.Reader, callback func(string, string, string, string, bool) error) error {
+	return ReadWithSubsectionCallback(reader, func(s, ss string, _ bool, k, v string, bv bool) error {
+		return callback(s, ss, k, v, bv)
+	})
+}
+
+// ReadWithSubsectionCallback is like ReadWithCallback, but the callback also
+// receives hasSubsection, which tells [x] from [x ""]. Both give an empty
+// subsection, but Git reads them as x.key and x..key respectively.
+//
+// hasSubsection is true for a header with a quoted subsection, including an
+// empty one, and for a legacy [section.subsection] header such as [a.b].
+// It is false for a plain [x]. It describes the header being read, so it is
+// also passed with the option lines that follow that header.
+//
+// As with ReadWithCallback, the callback is also called once per header, with
+// an empty key and value and blankValue true.
+//
+// The Read*Into functions drop the flag, so an empty subsection there still
+// folds onto the section.
+func ReadWithSubsectionCallback(reader io.Reader, callback func(section, subsection string, hasSubsection bool, key, value string, blankValue bool) error) error {
 	src, err := io.ReadAll(reader)
 	if err != nil {
 		return err
@@ -271,6 +295,11 @@ func ReadWithCallback(reader io.Reader, callback func(string, string, string, st
 
 // ReadInto reads gcfg formatted data from reader and sets the values into the
 // corresponding fields in config.
+//
+// Git files the keys under [sec ""] as sec..key, which a struct target cannot
+// represent, so ReadInto reads them as sec.key, like those under [sec]. A
+// caller that applies a policy keyed on a subsection must use
+// ReadWithSubsectionCallback instead.
 func ReadInto(config interface{}, reader io.Reader) error {
 	src, err := io.ReadAll(reader)
 	if err != nil {
@@ -286,6 +315,8 @@ func ReadInto(config interface{}, reader io.Reader) error {
 
 // ReadStringInto reads gcfg formatted data from str and sets the values into
 // the corresponding fields in config.
+//
+// See ReadInto for how an empty subsection is read.
 func ReadStringInto(config interface{}, str string) error {
 	r := strings.NewReader(str)
 	return ReadInto(config, r)
@@ -293,6 +324,8 @@ func ReadStringInto(config interface{}, str string) error {
 
 // ReadFileInto reads gcfg formatted data from the file filename and sets the
 // values into the corresponding fields in config.
+//
+// See ReadInto for how an empty subsection is read.
 func ReadFileInto(config interface{}, filename string) error {
 	f, err := os.Open(filename)
 	if err != nil {
