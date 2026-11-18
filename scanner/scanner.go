@@ -279,11 +279,12 @@ func (s *Scanner) scanString() (string, error) {
 func stripCR(b []byte) []byte {
 	c := make([]byte, len(b))
 	i := 0
-	for _, ch := range b {
-		if ch != '\r' {
-			c[i] = ch
-			i++
+	for j, ch := range b {
+		if ch == '\r' && j+1 < len(b) && b[j+1] == '\n' {
+			continue
 		}
+		c[i] = ch
+		i++
 	}
 	return c[:i]
 }
@@ -306,7 +307,7 @@ loop:
 			}
 			s.scanEscape(true)
 		case !inQuote && ch == '\\':
-			if s.ch == '\r' {
+			if s.ch == '\r' && s.rdOffset < len(s.src) && s.src[s.rdOffset] == '\n' {
 				hasCR = true
 				s.next()
 			}
@@ -318,7 +319,10 @@ loop:
 		case ch == '"':
 			inQuote = !inQuote
 		case ch == '\r':
-			hasCR = true
+			// Git drops a CR only when an LF follows it.
+			if s.ch == '\n' {
+				hasCR = true
+			}
 		case ch < 0 || inQuote && ch == '\n':
 			err := s.error(offs, "string not terminated")
 			if err != nil {

@@ -86,3 +86,21 @@ func TestValueLeadingWhitespaceMatchesGit(t *testing.T) {
 		{"CR after empty quotes", "[a]\nk=\"\"\rv\n", "v", false},
 	})
 }
+
+func TestValueBareCRMatchesGit(t *testing.T) {
+	runValueCases(t, []valueCase{
+		{"bare CR inside value", "[a]\nk=a\rb\n", "a\rb", false},
+		{"bare CR at end of quotes", "[a]\nk=\"a\r\"\n", "a\r", false},
+		{"bare CR before quote", "[a]\nk=a\r\"b\"\n", "a\rb", false},
+		{"backslash CR without LF", "[a]\nk=a\\\rb\n", "", true},
+		{"backslash CR without LF in quotes", "[a]\nk=\"a\\\rb\"\n", "", true},
+		{"trailing CR trimmed", "[a]\nk=a\r", "a", false},
+		{"trailing CR before comment", "[a]\nk=a\r;c\n", "a", false},
+		{"leading bare CR dropped", "[a]\nk=\rv\n", "v", false},
+		{"CRLF line end", "[a]\r\nk=a\r\n", "a", false},
+		{"CRLF continuation", "[a]\r\nk=a\\\r\nb\r\n", "ab", false},
+		{"CRLF continuation in quotes", "[a]\r\nk=\"a\\\r\nb\"\r\n", "ab", false},
+		{"bare CR before CRLF continuation", "[a]\nk=a\rb\\\r\nc\n", "a\rbc", false},
+		{"bare CR after CRLF continuation", "[a]\nk=a\\\r\nb\rc\n", "ab\rc", false},
+	})
+}
