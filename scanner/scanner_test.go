@@ -442,6 +442,7 @@ var testErrors = []struct {
 	{"=\"\n", token.STRING, 1, "string not terminated"},
 	{"=\\", token.STRING, 2, "unknown escape sequence"},
 	{"=\\\r", token.STRING, 3, "unknown escape sequence"},
+	{"=\"a\\\rb\"", token.STRING, 4, "unknown escape sequence"},
 	{`"\z"`, token.STRING, 2, "unknown escape sequence"},
 	{`"\a"`, token.STRING, 2, "unknown escape sequence"},
 	{`"\b"`, token.STRING, 2, "unknown escape sequence"},

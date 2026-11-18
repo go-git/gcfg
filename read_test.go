@@ -134,12 +134,21 @@ var readtests = []struct {
 	{"\n[section]\nname=\\", &cBasic{}, false},
 	{"\n[section]\nname=\\a", &cBasic{}, false},
 	{"\n[section]\nname=\"val\\a\"", &cBasic{}, false},
+	// a CR after a backslash only folds as part of CRLF
+	{"\n[section]\nname=\"a\\\rb\"", &cBasic{}, false},
 	{"\n[section]\nname=val\\", &cBasic{}, false},
 	// {"\n[sub \"A\\\n\"]\nname=value", &cSubs{}, false},
 	{"\n[sub \"A\\\t\"]\nname=value", &cSubs{}, false},
 	// broken line
 	// {"[section]\nname=value \\\n value", &cBasic{Section: cBasicS1{Name: "value  value"}}, true},
 	// {"[section]\nname=\"value \\\n value\"", &cBasic{}, false},
+}}, {"scanning:bom", []readtest{
+	{"\uFEFF[section]\nname=value", &cBasic{Section: cBasicS1{Name: "value"}}, true},
+	// only a complete BOM, and only at the very start, is skipped
+	{"\xEF[section]\nname=value", &cBasic{}, false},
+	{"\xEF\xBB[section]\nname=value", &cBasic{}, false},
+	{"\uFEFF\uFEFF[section]\nname=value", &cBasic{}, false},
+	{"[section]\n\uFEFFname=value", &cBasic{}, false},
 }}, {"scanning:whitespace", []readtest{
 	{" \n[section]\nname=value", &cBasic{Section: cBasicS1{Name: "value"}}, true},
 	{" [section]\nname=value", &cBasic{Section: cBasicS1{Name: "value"}}, true},
@@ -418,7 +427,7 @@ func TestReadWithCallback(t *testing.T) {
 		{"sect1", "subsect2", "", "", "true"},
 		{"sect2", "", "", "", "true"},
 		{"sect3", "", "", "", "true"},
-		{"sect3", "", "foo", "!f(){ \n\techo hello; \n\t};f", "false"},
+		{"sect3", "", "foo", "!f(){ \techo hello; \t};f", "false"},
 	}
 	err := ReadWithCallback(bytes.NewReader([]byte(text)), cb)
 	if err != nil {
@@ -445,6 +454,58 @@ func TestReadWithCallback(t *testing.T) {
 	}
 	if !reflect.DeepEqual(results, expected[:3]) {
 		t.Errorf("expected %+v, got %+v", expected, results[:3])
+	}
+}
+
+// The expected values are what git config --list reports for the same text.
+func TestReadWithCallbackMatchesGit(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		text     string
+		expected [][]string
+	}{{
+		name: "utf-8 BOM",
+		text: "\uFEFF[core]\n\ta = 1\n",
+		expected: [][]string{
+			{"core", "", "", "", "true"},
+			{"core", "", "a", "1", "false"},
+		},
+	}, {
+		name: "continuation outside quotes",
+		text: "[core]\n\ta = first \\\n\tsecond\n",
+		expected: [][]string{
+			{"core", "", "", "", "true"},
+			{"core", "", "a", "first \tsecond", "false"},
+		},
+	}, {
+		name: "continuation inside quotes",
+		text: "[core]\n\ta = \"q1 \\\n q2\"\n",
+		expected: [][]string{
+			{"core", "", "", "", "true"},
+			{"core", "", "a", "q1  q2", "false"},
+		},
+	}, {
+		name: "continuation with CRLF",
+		text: "[core]\r\n\ta = \"q1 \\\r\n q2\"\r\n\tb = u1 \\\r\n u2\r\n",
+		expected: [][]string{
+			{"core", "", "", "", "true"},
+			{"core", "", "a", "q1  q2", "false"},
+			{"core", "", "b", "u1  u2", "false"},
+		},
+	}} {
+		t.Run(tt.name, func(t *testing.T) {
+			results := [][]string{}
+			cb := func(s string, ss string, k string, v string, bv bool) error {
+				results = append(results, []string{s, ss, k, v, strconv.FormatBool(bv)})
+				return nil
+			}
+			if err := ReadWithCallback(bytes.NewReader([]byte(tt.text)), cb); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(results, tt.expected) {
+				t.Errorf("expected %q, got %q", tt.expected, results)
+			}
+		})
 	}
 }
 
