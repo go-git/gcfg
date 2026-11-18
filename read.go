@@ -35,6 +35,12 @@ func unquote(s string) (string, error) {
 			q = !q
 		case '\\':
 			esc = true
+		case ' ', '\t':
+			// Git drops unquoted whitespace while the value is still
+			// empty. A quote does not count as content.
+			if q || len(u) > 0 {
+				u = append(u, c)
+			}
 		default:
 			u = append(u, c)
 		}
