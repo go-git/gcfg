@@ -126,7 +126,7 @@ func read(callback func(Event) error,
 				}
 
 				sectsub, hasSub = ss, true
-				pos, tok, lit, err = s.Scan()
+				pos, tok, _, err = s.Scan()
 				if err != nil {
 					return err
 				}
