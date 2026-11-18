@@ -27,9 +27,11 @@
 //     git and refused here: `[.x]`, `[x.]` and `[.]` (empty section or
 //     subsection name), `[a.b "C"]` and `[a.b ""]` (both forms in one header)
 //     and text after a header on its line (`[a.b]k=v`, as in `[a]k=v`)
-//   - an empty subsection name, as in `[sec ""]`, is read as no subsection:
-//     it is reported like `[sec]`, the section name "sec" with an empty
-//     subsection name
+//   - an empty subsection name, as in `[sec ""]`, is stored like `[sec]`, with
+//     an empty subsection name, by the `Read*Into` functions and
+//     `ReadWithCallback`. Git keeps them apart (`sec..key` against
+//     `sec.key`), and `ReadWithOptions` reports the difference through
+//     `Event.HasSubsection`
 //   - (planned) within a single file, definitions must be contiguous for each:
 //   - section: '[secA]' -> '[secB]' -> '[secA]' is an error
 //   - subsection: '[sec "A"]' -> '[sec "B"]' -> '[sec "A"]' is an error

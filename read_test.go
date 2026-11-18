@@ -810,3 +810,184 @@ func TestReadLegacySubsectionHeaderRefusedGitAccepts(t *testing.T) {
 		}
 	}
 }
+
+type subsectionEvent struct {
+	sect, sub string
+	hasSub    bool
+	key, val  string
+	blank     bool
+}
+
+func TestReadWithOptions(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+		want []subsectionEvent
+	}{
+		{"plain", "[a]\nk = 1\n", []subsectionEvent{
+			{"a", "", false, "", "", true},
+			{"a", "", false, "k", "1", false},
+		}},
+		{"quoted", "[a \"b\"]\nk\n", []subsectionEvent{
+			{"a", "b", true, "", "", true},
+			{"a", "b", true, "k", "", true},
+		}},
+		{"quoted empty", "[a \"\"]\nk = 1\n", []subsectionEvent{
+			{"a", "", true, "", "", true},
+			{"a", "", true, "k", "1", false},
+		}},
+		{"legacy", "[a.b]\nk = 1\n", []subsectionEvent{
+			{"a", "b", true, "", "", true},
+			{"a", "b", true, "k", "1", false},
+		}},
+		{"legacy trailing dot", "[a.b.]\nk = 1\n", []subsectionEvent{
+			{"a", "b.", true, "", "", true},
+			{"a", "b.", true, "k", "1", false},
+		}},
+		{"legacy double dot", "[a..b]\nk = 1\n", []subsectionEvent{
+			{"a", ".b", true, "", "", true},
+			{"a", ".b", true, "k", "1", false},
+		}},
+		{"combined", "[a.b]\nk=1\n[a \"b\"]\nk=2\n[a \"\"]\nk=3\n[a.b.]\nk=4\n[a]\nk=5\n", []subsectionEvent{
+			{"a", "b", true, "", "", true},
+			{"a", "b", true, "k", "1", false},
+			{"a", "b", true, "", "", true},
+			{"a", "b", true, "k", "2", false},
+			{"a", "", true, "", "", true},
+			{"a", "", true, "k", "3", false},
+			{"a", "b.", true, "", "", true},
+			{"a", "b.", true, "k", "4", false},
+			{"a", "", false, "", "", true},
+			{"a", "", false, "k", "5", false},
+		}},
+		{"reset on later plain header", "[x \"y\"]\nk=1\n[z]\nk=2\n[x]\nk=3\n", []subsectionEvent{
+			{"x", "y", true, "", "", true},
+			{"x", "y", true, "k", "1", false},
+			{"z", "", false, "", "", true},
+			{"z", "", false, "k", "2", false},
+			{"x", "", false, "", "", true},
+			{"x", "", false, "k", "3", false},
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got []subsectionEvent
+			err := ReadWithOptions(strings.NewReader(tt.src),
+				WithCallback(func(e Event) error {
+					got = append(got, subsectionEvent{e.Section, e.Subsection, e.HasSubsection, e.Key, e.Value, e.BlankValue})
+					return nil
+				}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("got  %+v\nwant %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestReadWithCallbackIgnoresSubsectionFlag(t *testing.T) {
+	var got [][2]string
+	err := ReadWithCallback(strings.NewReader("[x \"\"]\na = 1\n[x]\n"),
+		func(s, ss, k, v string, b bool) error {
+			got = append(got, [2]string{s, ss})
+			return nil
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %v", got)
+	}
+	for _, g := range got {
+		if g != [2]string{"x", ""} {
+			t.Errorf("got %v", g)
+		}
+	}
+}
+
+func TestReadWithOptionsRefusesEmptyLegacyName(t *testing.T) {
+	err := ReadWithOptions(strings.NewReader("[x.]\nk = 1\n"),
+		WithCallback(func(Event) error { return nil }))
+	if err == nil {
+		t.Error("expected an error for [x.]")
+	}
+}
+
+func TestReadWithOptionsWithoutCallback(t *testing.T) {
+	nop := func(string, string, string, string, bool) error { return nil }
+	for _, src := range []string{"", "[x]\na = 1\n[x \"\"]\nb\n", "[x\n", "a = 1\n", "[x]\na = \"b\n"} {
+		want := ReadWithCallback(strings.NewReader(src), nop)
+		got := ReadWithOptions(strings.NewReader(src))
+		if (got == nil) != (want == nil) || (got != nil && got.Error() != want.Error()) {
+			t.Errorf("%q: got %v, want %v", src, got, want)
+		}
+	}
+	if ReadWithOptions(strings.NewReader("[x\n")) == nil {
+		t.Error("a syntax error must still be reported")
+	}
+}
+
+func TestReadWithOptionsStopsOnCallbackError(t *testing.T) {
+	stop := errors.New("stop")
+	calls := 0
+	err := ReadWithOptions(strings.NewReader("[x]\na = 1\nb = 2\n"),
+		WithCallback(func(Event) error {
+			calls++
+			if calls == 2 {
+				return stop
+			}
+			return nil
+		}))
+	if !errors.Is(err, stop) {
+		t.Errorf("got %v, want %v", err, stop)
+	}
+	if calls != 2 {
+		t.Errorf("callback called %d times, want 2", calls)
+	}
+}
+
+func TestReadWithOptionsLastCallbackWins(t *testing.T) {
+	var first, second int
+	err := ReadWithOptions(strings.NewReader("[x]\n"),
+		WithCallback(func(Event) error { first++; return nil }),
+		WithCallback(func(Event) error { second++; return nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != 0 || second != 1 {
+		t.Errorf("first=%d second=%d", first, second)
+	}
+}
+
+func TestReadWithOptionsPosition(t *testing.T) {
+	src := "; comment\n" + // 1
+		"\n" + // 2
+		"[a]\n" + // 3
+		"\tk = 1\n" + // 4
+		"  [b \"\"] # c\n" + // 5
+		"\n" + // 6
+		"\tl\n" + // 7
+		"[c.d]\n" // 8
+	type pos struct {
+		key       string
+		line, col int
+	}
+	want := []pos{
+		{"", 3, 1}, {"k", 4, 2},
+		{"", 5, 3}, {"l", 7, 2},
+		{"", 8, 1},
+	}
+	var got []pos
+	err := ReadWithOptions(strings.NewReader(src), WithCallback(func(e Event) error {
+		got = append(got, pos{e.Key, e.Position.Line, e.Position.Column})
+		return nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got  %+v\nwant %+v", got, want)
+	}
+}

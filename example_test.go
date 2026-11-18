@@ -3,6 +3,7 @@ package gcfg_test
 import (
 	"fmt"
 	"log"
+	"strings"
 
 	"github.com/go-git/gcfg/v2"
 )
@@ -129,4 +130,33 @@ func ExampleReadStringInto_unicode() {
 	}
 	fmt.Println(cfg.X甲.X乙)
 	// Output: 丙
+}
+
+func ExampleReadWithOptions() {
+	cfgStr := `[protocol]
+allow = never
+[protocol ""]
+allow = always`
+	err := gcfg.ReadWithOptions(strings.NewReader(cfgStr),
+		gcfg.WithCallback(func(e gcfg.Event) error {
+			if e.Key == "" {
+				return nil
+			}
+			fmt.Printf("line %d: hasSubsection=%t %s=%s\n",
+				e.Position.Line, e.HasSubsection, e.Key, e.Value)
+			return nil
+		}))
+	if err != nil {
+		log.Fatalf("Failed to parse gcfg data: %s", err)
+	}
+	// Output:
+	// line 2: hasSubsection=false allow=never
+	// line 4: hasSubsection=true allow=always
+}
+
+func ExampleReadWithOptions_validate() {
+	// Without WithCallback the data is only parsed, so this checks syntax.
+	err := gcfg.ReadWithOptions(strings.NewReader("[section\nname = value"))
+	fmt.Println(err != nil)
+	// Output: true
 }
