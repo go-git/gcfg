@@ -5,9 +5,13 @@ import (
 	"encoding"
 	"fmt"
 	"math/big"
+	"math/rand"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 
 	"errors"
@@ -197,7 +201,7 @@ var readtests = []struct {
 	// empty section
 	{"\n[]\nname=value", &cBasic{}, false},
 	// empty subsection name
-  {"\n[sub \"\"]\nname=value", &cSubs{Sub: map[string]*cSubsS1{"": {"value"}}}, true},
+	{"\n[sub \"\"]\nname=value", &cSubs{Sub: map[string]*cSubsS1{"": {"value"}}}, true},
 }}, {"setting", []readtest{
 	{"[section]\nname=value", &cBasic{Section: cBasicS1{Name: "value"}}, true},
 	// pointer
@@ -543,5 +547,266 @@ func TestReadWithCallback_WithError(t *testing.T) {
 	}
 	if !reflect.DeepEqual(results, expected) {
 		t.Errorf("expected %+v, got %+v", expected, results)
+	}
+}
+
+func readCallbacks(t *testing.T, text string) ([][]string, error) {
+	t.Helper()
+	results := [][]string{}
+	cb := func(s string, ss string, k string, v string, bv bool) error {
+		results = append(results, []string{s, ss, k, v, strconv.FormatBool(bv)})
+		return nil
+	}
+	err := ReadWithCallback(bytes.NewReader([]byte(text)), cb)
+	return results, err
+}
+
+// Git reads a [section.subsection] header as section and subsection, both
+// lowercased (config.c get_base_var). The expected values are what git
+// config --list reports for the same text.
+func TestReadLegacySubsectionHeader(t *testing.T) {
+	for _, tt := range []struct {
+		name, text string
+		sect, sub  string
+	}{
+		{"plain", "[protocol.file]\n\tk = v\n", "protocol", "file"},
+		{"uppercase", "[Protocol.File]\n\tk = v\n", "protocol", "file"},
+		{"dots in subsection", "[a.b.c]\n\tk = v\n", "a", "b.c"},
+		{"consecutive dots", "[a..b]\n\tk = v\n", "a", ".b"},
+		{"trailing dot in subsection", "[a.b.]\n\tk = v\n", "a", "b."},
+		{"hyphens and digits", "[a-1.b-2]\n\tk = v\n", "a-1", "b-2"},
+		{"leading digit", "[1a.b]\n\tk = v\n", "1a", "b"},
+		{"leading hyphen", "[-a.-b]\n\tk = v\n", "-a", "-b"},
+		{"indented", "  \t[a.b]\n\tk = v\n", "a", "b"},
+		{"trailing comment", "[a.b] ; c\n\tk = v\n", "a", "b"},
+		{"trailing hash comment", "[a.b]#c\n\tk = v\n", "a", "b"},
+		{"crlf", "[a.b]\r\n\tk = v\r\n", "a", "b"},
+		{"bom", "\uFEFF[a.b]\n\tk = v\n", "a", "b"},
+		{"no final newline", "[a.b]", "a", "b"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := readCallbacks(t, tt.text)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got) == 0 || got[0][0] != tt.sect || got[0][1] != tt.sub ||
+				got[0][2] != "" || got[0][4] != "true" {
+				t.Errorf("header: want %q/%q, got %q", tt.sect, tt.sub, got)
+			}
+			if strings.Contains(tt.text, "k = v") {
+				want := []string{tt.sect, tt.sub, "k", "v", "false"}
+				if len(got) != 2 || !reflect.DeepEqual(got[1], want) {
+					t.Errorf("option: want %q, got %q", want, got)
+				}
+			}
+		})
+	}
+}
+
+// A '[' that does not start a header is left alone.
+func TestReadLegacySubsectionHeaderNotAHeader(t *testing.T) {
+	for _, tt := range []struct {
+		name, text string
+		want       [][]string
+	}{
+		{"comment", "# [a.b]\n[s]\n", [][]string{{"s", "", "", "", "true"}}},
+		{"value", "[s]\n\tk = [a.b]\n", [][]string{
+			{"s", "", "", "", "true"}, {"s", "", "k", "[a.b]", "false"}}},
+		{"continued value", "[s]\n\tk = x\\\n[a.b]\n", [][]string{
+			{"s", "", "", "", "true"}, {"s", "", "k", "x[a.b]", "false"}}},
+		{"quoted subsection", "[remote \"[A.B]\"]\n", [][]string{
+			{"remote", "[A.B]", "", "", "true"}}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := readCallbacks(t, tt.text)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("want %q, got %q", tt.want, got)
+			}
+		})
+	}
+}
+
+// Git accepts every one of these except the first group, where it fails
+// too. They are refused here, and the error points at the offending
+// character or token, not at the start of the header.
+//
+//   - [.x], [x.] and [.] have an empty section or subsection name.
+//   - Text after the header on the same line is refused for [a] as well.
+//   - A mixed header such as [a.b "C"] would need a rule for which of the
+//     two subsections wins.
+func TestReadLegacySubsectionHeaderRefused(t *testing.T) {
+	for _, tt := range []struct {
+		text string
+		want string // error prefix: position and message
+	}{
+		// git fails too
+		{"[a.b c]\n", "1:3: illegal character U+002E '.'"},
+		{"[a_b.c]\n", "1:3: illegal character U+005F '_'"},
+		{"[a.b\n", "1:3: illegal character U+002E '.'"},
+		{"[é.b]\n", "1:4: illegal character U+002E '.'"},
+		// git accepts
+		{"[.x]\n", "1:2: illegal character U+002E '.'"},
+		{"[x.]\n", "1:3: illegal character U+002E '.'"},
+		{"[.]\n", "1:2: illegal character U+002E '.'"},
+		{"[a.b]garbage\n", "1:6: expected EOL, EOF, or comment"},
+		{"[a.b]k = v\n", "1:6: expected EOL, EOF, or comment"},
+		{"[a.b \"C\"]\n", "1:3: illegal character U+002E '.'"},
+		{"[a.b \"\"]\n", "1:3: illegal character U+002E '.'"},
+		{"[s]\n[a.b]x\n", "2:6: expected EOL, EOF, or comment"},
+	} {
+		t.Run(tt.text, func(t *testing.T) {
+			_, err := readCallbacks(t, tt.text)
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			if !strings.HasPrefix(err.Error(), tt.want) {
+				t.Errorf("want %q in error, got %q", tt.want, err)
+			}
+		})
+	}
+}
+
+type cLegacy struct {
+	Protocol map[string]*struct{ Allow string }
+	Remote   map[string]*struct{ URL string }
+}
+
+func TestReadIntoLegacySubsectionHeader(t *testing.T) {
+	var c cLegacy
+	err := ReadStringInto(&c, "[Protocol.File]\n\tallow = never\n[protocol \"file\"]\n\tallow = user\n[remote.Origin]\n\turl = u\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c.Protocol["file"]; got == nil || got.Allow != "user" {
+		t.Errorf("protocol: %+v", c.Protocol)
+	}
+	if got := c.Remote["origin"]; got == nil || got.URL != "u" {
+		t.Errorf("remote: %+v", c.Remote)
+	}
+	if _, ok := c.Remote["Origin"]; ok {
+		t.Errorf("subsection must be lowercased: %+v", c.Remote)
+	}
+}
+
+// Every legacy header reads as its quoted equivalent.
+func TestReadLegacySubsectionHeaderEqualsQuoted(t *testing.T) {
+	legacy := "[A.B.C]\n\tk = v\n[x-1.y-2] ; c\n\tk\n"
+	quoted := "[a \"b.c\"]\n\tk = v\n[x-1 \"y-2\"] ; c\n\tk\n"
+	got, err := readCallbacks(t, legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := readCallbacks(t, quoted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("want %q, got %q", want, got)
+	}
+}
+
+// Sanity run over random lines built from header characters: reading must
+// not panic or hang, and every line that is exactly a legacy header, as git
+// get_base_var accepts it, must be reported lowercased and split at the
+// first dot, while every other line must not be reported as one.
+func TestReadLegacySubsectionHeaderRandom(t *testing.T) {
+	const alphabet = "aZ0-.[] "
+	rng := rand.New(rand.NewSource(1))
+	for i := 0; i < 20000; i++ {
+		b := make([]byte, rng.Intn(12))
+		for j := range b {
+			b[j] = alphabet[rng.Intn(len(alphabet))]
+		}
+		line := string(b)
+		got, err := readCallbacks(t, line+"\n")
+		name, ok := strings.CutPrefix(line, "[")
+		if ok {
+			name, ok = strings.CutSuffix(name, "]")
+		}
+		d := strings.IndexByte(name, '.')
+		ok = ok && d > 0 && d < len(name)-1 && !strings.ContainsAny(name, "[] ")
+		if !ok {
+			for _, r := range got {
+				if strings.Contains(line, ".") && r[1] != "" {
+					t.Fatalf("%q must not read as a legacy header: %q", line, got)
+				}
+			}
+			continue
+		}
+		want := [][]string{{strings.ToLower(name[:d]), strings.ToLower(name[d+1:]), "", "", "true"}}
+		if err != nil || !reflect.DeepEqual(got, want) {
+			t.Fatalf("%q: want %q, got %q, %v", line, want, got, err)
+		}
+	}
+}
+
+// Every header this package reads, git reads as the same variable. The
+// reverse does not hold, see TestReadLegacySubsectionHeaderRefused.
+func TestReadLegacySubsectionHeaderAgainstGit(t *testing.T) {
+	gitBin, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not found")
+	}
+	const alphabet = "aZ0-."
+	rng := rand.New(rand.NewSource(2))
+	dir := t.TempDir()
+	checked := 0
+	for i := 0; i < 1000; i++ {
+		b := make([]byte, rng.Intn(9))
+		for j := range b {
+			b[j] = alphabet[rng.Intn(len(alphabet))]
+		}
+		if len(b) > 0 && rng.Intn(5) == 0 {
+			b[rng.Intn(len(b))] = " _[]"[rng.Intn(4)]
+		}
+		text := "[" + string(b) + "]\n\tk = v\n"
+		got, err := readCallbacks(t, text)
+		if err != nil {
+			continue
+		} else if got[0][1] == "" {
+			continue // not a legacy header
+		}
+		file := filepath.Join(dir, "config")
+		if err := os.WriteFile(file, []byte(text), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		out, err := exec.Command(gitBin, "config", "--file", file, "--list").Output()
+		if err != nil {
+			t.Fatalf("%q: read here as %q, git fails: %v", text, got, err)
+		}
+		r := got[len(got)-1]
+		// Section names keep their case here and are matched ignoring it.
+		key := strings.ToLower(r[0]) + "." + r[1] + "." + r[2]
+		if want := key + "=v\n"; string(out) != want {
+			t.Fatalf("%q: git reads %q, here %q", text, out, want)
+		}
+		checked++
+	}
+	if checked < 100 {
+		t.Errorf("only %d inputs were compared", checked)
+	}
+}
+
+// Git accepts these, with an empty section or subsection name, and they are
+// refused here.
+func TestReadLegacySubsectionHeaderRefusedGitAccepts(t *testing.T) {
+	gitBin, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not found")
+	}
+	for _, text := range []string{"[.x]\n\tk = v\n", "[x.]\n\tk = v\n", "[.]\n\tk = v\n"} {
+		file := filepath.Join(t.TempDir(), "config")
+		if err := os.WriteFile(file, []byte(text), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if out, err := exec.Command(gitBin, "config", "--file", file, "--list").CombinedOutput(); err != nil {
+			t.Errorf("%q: git fails: %s", text, out)
+		}
+		if _, err := readCallbacks(t, text); err == nil {
+			t.Errorf("%q: expected an error", text)
+		}
 	}
 }
