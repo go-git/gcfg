@@ -2,6 +2,7 @@ package gcfg
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -30,8 +31,11 @@ func readValue(text string) (string, error) {
 	return got, err
 }
 
-// gitValue returns what git config --get reports for a.k in text.
-func gitValue(t *testing.T, text string) (string, bool) {
+// gitValue returns what git config --get reports for a.k in text. If git
+// rejects the text as malformed (exit 128 and a "bad config" message, which
+// the rest of the message varies by release), it returns rejected true.
+// Any other failure, such as a missing key or git not running, fails the test.
+func gitValue(t *testing.T, text string) (val string, rejected bool) {
 	t.Helper()
 	file := filepath.Join(t.TempDir(), "config")
 	if err := os.WriteFile(file, []byte(text), 0o644); err != nil {
@@ -41,9 +45,13 @@ func gitValue(t *testing.T, text string) (string, bool) {
 	cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null")
 	out, err := cmd.Output()
 	if err != nil {
-		return "", false
+		var ee *exec.ExitError
+		if errors.As(err, &ee) && ee.ExitCode() == 128 && bytes.Contains(ee.Stderr, []byte("bad config")) {
+			return "", true
+		}
+		t.Fatalf("git config: %v", err)
 	}
-	return strings.TrimSuffix(string(out), "\n"), true
+	return strings.TrimSuffix(string(out), "\n"), false
 }
 
 // versionAtLeast reports whether the output of git --version names a
@@ -79,7 +87,10 @@ func runValueCasesSince(t *testing.T, major, minor int, cases []valueCase) {
 	_, gitErr := exec.LookPath("git")
 	var gitVer string
 	if gitErr == nil {
-		out, _ := exec.Command("git", "--version").Output()
+		out, err := exec.Command("git", "--version").Output()
+		if err != nil {
+			gitErr = err
+		}
 		gitVer = string(out)
 	}
 	for _, tc := range cases {
@@ -95,14 +106,14 @@ func runValueCasesSince(t *testing.T, major, minor int, cases []valueCase) {
 			}
 			t.Run("git", func(t *testing.T) {
 				if gitErr != nil {
-					t.Skip("git not found")
+					t.Skipf("git unusable: %v", gitErr)
 				}
 				if !versionAtLeast(gitVer, major, minor) {
 					t.Skipf("needs git %d.%d or newer, have %s", major, minor, strings.TrimSpace(gitVer))
 				}
-				gv, ok := gitValue(t, tc.text)
-				if ok == tc.fail || (ok && gv != tc.want) {
-					t.Errorf("git disagrees with the table: value %q ok=%v; fix the test", gv, ok)
+				gv, rejected := gitValue(t, tc.text)
+				if rejected != tc.fail || (!rejected && gv != tc.want) {
+					t.Errorf("git disagrees with the table: value %q rejected=%v; fix the test", gv, rejected)
 				}
 			})
 		})
