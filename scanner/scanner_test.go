@@ -509,6 +509,10 @@ func TestScanLegacyHeader(t *testing.T) {
 		{"[a.b ]", []tl{{token.LBRACK, ""}, {token.IDENT, "a"}, {token.ILLEGAL, "."}, {token.IDENT, "b"}, {token.RBRACK, ""}}, 1},
 		{"[a.b", []tl{{token.LBRACK, ""}, {token.IDENT, "a"}, {token.ILLEGAL, "."}, {token.IDENT, "b"}}, 1},
 		{"[a]", []tl{{token.LBRACK, ""}, {token.IDENT, "a"}, {token.RBRACK, ""}}, 0},
+		// a plain or quoted-subsection name may start with a digit or '-'
+		{"[1a]", []tl{{token.LBRACK, ""}, {token.IDENT, "1a"}, {token.RBRACK, ""}}, 0},
+		{"[-a]", []tl{{token.LBRACK, ""}, {token.IDENT, "-a"}, {token.RBRACK, ""}}, 0},
+		{"[1a \"b\"]", []tl{{token.LBRACK, ""}, {token.IDENT, "1a"}, {token.STRING, "\"b\""}, {token.RBRACK, ""}}, 0},
 		// a '[' that is not followed by one is not a header start
 		{"= [a.b]", []tl{{token.ASSIGN, ""}, {token.STRING, "[a.b]"}}, 0},
 	} {

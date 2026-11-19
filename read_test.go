@@ -991,3 +991,55 @@ func TestReadWithOptionsPosition(t *testing.T) {
 		t.Errorf("got  %+v\nwant %+v", got, want)
 	}
 }
+
+// Git reads a section name that starts with a digit or '-' in every
+// spelling: bare, quoted subsection and legacy. Each text below gives the
+// same variables as git config --list reports for it.
+func TestReadSectionNameLeadingDigitOrHyphen(t *testing.T) {
+	for _, tt := range []struct {
+		text      string
+		sect, sub string
+		hasSub    bool
+	}{
+		{"[1a]", "1a", "", false},
+		{"[-a]", "-a", "", false},
+		{"[1a \"b\"]", "1a", "b", true},
+		{"[-a \"B\"]", "-a", "B", true},
+		{"[1a.b]", "1a", "b", true},
+		{"[-a.b]", "-a", "b", true},
+		{"[1.b]", "1", "b", true},
+	} {
+		t.Run(tt.text, func(t *testing.T) {
+			var got []Event
+			err := ReadWithOptions(strings.NewReader(tt.text+"\n\tk = v\n"),
+				WithCallback(func(e Event) error { got = append(got, e); return nil }))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != 2 || got[0].Section != tt.sect || got[0].Subsection != tt.sub ||
+				got[0].HasSubsection != tt.hasSub || got[1].Section != tt.sect ||
+				got[1].Subsection != tt.sub || got[1].Key != "k" || got[1].Value != "v" {
+				t.Errorf("want %q/%q (sub %v), got %+v", tt.sect, tt.sub, tt.hasSub, got)
+			}
+		})
+	}
+}
+
+// The quoted form is what go-git's encoder writes for a legacy header, so
+// it must read back as the same subsection.
+func TestReadLegacyHeaderRoundTripsQuoted(t *testing.T) {
+	for _, h := range []string{"1a.b", "-a.b", "a.b"} {
+		sect, sub, _ := strings.Cut(h, ".")
+		legacy, err := readCallbacks(t, "["+h+"]\n\tk = v\n")
+		if err != nil {
+			t.Fatal(err)
+		}
+		quoted, err := readCallbacks(t, "["+sect+" \""+sub+"\"]\n\tk = v\n")
+		if err != nil {
+			t.Fatalf("%s: quoted form: %v", h, err)
+		}
+		if !reflect.DeepEqual(legacy, quoted) {
+			t.Errorf("%s: legacy %q, quoted %q", h, legacy, quoted)
+		}
+	}
+}
