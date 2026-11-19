@@ -15,6 +15,8 @@ import (
 	"testing"
 
 	"errors"
+
+	"github.com/go-git/gcfg/v2/token"
 )
 
 const (
@@ -1040,6 +1042,31 @@ func TestReadLegacyHeaderRoundTripsQuoted(t *testing.T) {
 		}
 		if !reflect.DeepEqual(legacy, quoted) {
 			t.Errorf("%s: legacy %q, quoted %q", h, legacy, quoted)
+		}
+	}
+}
+
+// Positions cost a lookup per header and option, so only ReadWithOptions
+// with a callback computes them.
+func TestReadEventsPositions(t *testing.T) {
+	const text = "[a]\n  k = v\n"
+	for _, tt := range []struct {
+		positions bool
+		want      []token.Position
+	}{
+		{true, []token.Position{{Offset: 0, Line: 1, Column: 1}, {Offset: 6, Line: 2, Column: 3}}},
+		{false, []token.Position{{}, {}}},
+	} {
+		var got []token.Position
+		err := readEvents(strings.NewReader(text), func(e Event) error {
+			got = append(got, e.Position)
+			return nil
+		}, tt.positions)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(got, tt.want) {
+			t.Errorf("positions=%v: want %+v, got %+v", tt.positions, tt.want, got)
 		}
 	}
 }
