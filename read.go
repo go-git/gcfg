@@ -54,8 +54,16 @@ func unquote(s string) (string, error) {
 	return string(u), nil
 }
 
+// read reports each header and option to callback. It computes Event.Position
+// only if positions is true.
 func read(callback func(Event) error,
-	fset *token.FileSet, file *token.File, src []byte) error {
+	fset *token.FileSet, file *token.File, src []byte, positions bool) error {
+	position := func(p token.Pos) token.Position {
+		if !positions {
+			return token.Position{}
+		}
+		return fset.Position(p)
+	}
 	//
 	var s scanner.Scanner
 	var errs scanner.ErrorList
@@ -85,7 +93,7 @@ func read(callback func(Event) error,
 				return err
 			}
 		case token.LBRACK:
-			hdrPos = fset.Position(pos)
+			hdrPos = position(pos)
 			pos, tok, lit, err = s.Scan()
 			if err != nil {
 				return err
@@ -159,7 +167,7 @@ func read(callback func(Event) error,
 				return err
 			}
 		case token.IDENT:
-			keyPos := fset.Position(pos)
+			keyPos := position(pos)
 			if sect == "" {
 				if err, fatal := joinNonFatal(accErr, errfn("expected section header")); fatal {
 					return err
@@ -239,14 +247,14 @@ func readInto(config interface{}, fset *token.FileSet, file *token.File,
 	firstPassCallback := func(e Event) error {
 		return set(config, e.Section, e.Subsection, e.Key, e.Value, e.BlankValue, false)
 	}
-	err := read(firstPassCallback, fset, file, src)
+	err := read(firstPassCallback, fset, file, src, false)
 	if err != nil {
 		return err
 	}
 	secondPassCallback := func(e Event) error {
 		return set(config, e.Section, e.Subsection, e.Key, e.Value, e.BlankValue, true)
 	}
-	return read(secondPassCallback, fset, file, src)
+	return read(secondPassCallback, fset, file, src, false)
 }
 
 // ReadWithCallback reads gcfg formatted data from reader and calls
@@ -270,9 +278,9 @@ func readInto(config interface{}, fset *token.FileSet, file *token.File,
 //
 // If callback returns an error, ReadWithCallback terminates with an error too.
 func ReadWithCallback(reader io.Reader, callback func(string, string, string, string, bool) error) error {
-	return ReadWithOptions(reader, WithCallback(func(e Event) error {
+	return readEvents(reader, func(e Event) error {
 		return callback(e.Section, e.Subsection, e.Key, e.Value, e.BlankValue)
-	}))
+	}, false)
 }
 
 // Event is one item the reader found: a section header, or an option line
@@ -302,6 +310,8 @@ type Event struct {
 	BlankValue bool
 	// Position is where the item starts: the "[" of a header, or the key of
 	// an option line. Its Line and Column start at 1, and Filename is empty.
+	// Column is a byte offset from the start of the line plus 1, not a
+	// character count.
 	// A consumer can use it to point at the item in an error message.
 	Position token.Position
 }
@@ -330,9 +340,18 @@ func WithCallback(callback func(Event) error) ReadOption {
 // functions do not use that flag, so an empty subsection there still folds
 // onto the section.
 func ReadWithOptions(reader io.Reader, opts ...ReadOption) error {
-	o := readOptions{callback: func(Event) error { return nil }}
+	o := readOptions{}
 	for _, opt := range opts {
 		opt(&o)
+	}
+	return readEvents(reader, o.callback, o.callback != nil)
+}
+
+// readEvents reads from reader and reports to callback, which may be nil. It
+// sets Event.Position only if positions is true.
+func readEvents(reader io.Reader, callback func(Event) error, positions bool) error {
+	if callback == nil {
+		callback = func(Event) error { return nil }
 	}
 
 	src, err := io.ReadAll(reader)
@@ -346,7 +365,7 @@ func ReadWithOptions(reader io.Reader, opts ...ReadOption) error {
 		return err
 	}
 
-	return read(o.callback, fset, file, src)
+	return read(callback, fset, file, src, positions)
 }
 
 // ReadInto reads gcfg formatted data from reader and sets the values into the

@@ -46,6 +46,7 @@ type Scanner struct {
 	lineOffset int  // current line offset
 	nextVal    bool // next token is expected to be a value
 	legacy     bool // next token is the name of a legacy [section.subsection] header
+	name       bool // next token is a section name that starts with a digit or '-'
 
 	// public state - ok to modify
 	ErrorCount int // number of errors encountered
@@ -134,6 +135,7 @@ func (s *Scanner) Init(file *token.File, src []byte, err ErrorHandler, mode Mode
 	s.ErrorCount = 0
 	s.nextVal = false
 	s.legacy = false
+	s.name = false
 
 	s.next()
 	if s.ch == bom {
@@ -365,6 +367,9 @@ func (s *Scanner) skipWhitespace() {
 // and with its original case; it may also start with a digit or '-'.
 // Splitting it at the first '.' and lowercasing is up to the parser.
 //
+// A section name that starts with a digit or '-' is returned as a
+// token.IDENT too, whether bare or followed by a quoted subsection.
+//
 // If the returned token is token.ILLEGAL, the literal string is the
 // offending character.
 //
@@ -398,6 +403,10 @@ scanAgain:
 		lit = s.scanLegacyName()
 		tok = token.IDENT
 		s.legacy = false
+	case s.name:
+		lit = s.scanIdentifier()
+		tok = token.IDENT
+		s.name = false
 	case s.nextVal:
 		l, err2 := s.scanValString()
 		if err2 != nil {
@@ -428,6 +437,7 @@ scanAgain:
 		case '[':
 			tok = token.LBRACK
 			s.legacy = s.atLegacyHeader()
+			s.name = !s.legacy && (s.ch == '-' || '0' <= s.ch && s.ch <= '9')
 		case ']':
 			tok = token.RBRACK
 		case ';', '#':
